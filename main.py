@@ -75,7 +75,7 @@ async def main(keyword, pages):
             tasks.append(task)
 
         tasks = await asyncio.gather(*tasks)
-        await browser.close()
+        # await browser.close()
 
     return tasks
 
