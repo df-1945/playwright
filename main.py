@@ -48,12 +48,12 @@ async def main(keyword, pages):
     product_soup = []
     async with async_playwright() as playwright:
         browser = await playwright.firefox.launch(headless=True)
-        
+        context = await browser.new_context()
         loop = asyncio.get_event_loop()
         tasks = [
             loop.create_task(
                 scrape(
-                    f"https://www.tokopedia.com/search?q={keyword}&page={page}", browser
+                    f"https://www.tokopedia.com/search?q={keyword}&page={page}", context
                 )
             )
             for page in range(1, pages + 1)
@@ -67,7 +67,7 @@ async def main(keyword, pages):
 
         async def process_task(i):
             async with semaphore:
-                data = asyncio.create_task(scrape_page(product_soup[i], browser))
+                data = asyncio.create_task(scrape_page(product_soup[i], context))
                 await asyncio.gather(data)
 
         for i in range(len(product_soup)):
@@ -75,15 +75,14 @@ async def main(keyword, pages):
             tasks.append(task)
 
         tasks = await asyncio.gather(*tasks)
-        # await browser.close()
+        await browser.close()
 
     return tasks
 
 
-async def scrape(url, browser):
+async def scrape(url, context):
     soup_produk = []
     try:
-        context = await browser.new_context()
         page = await context.new_page()
         print("Membuka halaman...")
         await page.goto(url, timeout=1800000)
@@ -126,7 +125,7 @@ async def scroll(page, scroll_amount):
         print(f"Terjadi kesalahan saat Scrolling: {str(e)}")
 
 
-async def scrape_page(soup, browser):
+async def scrape_page(soup, context):
     href = soup.find("a")["href"]
     link_parts = href.split("r=")
     r_part = link_parts[-1]
@@ -137,9 +136,9 @@ async def scrape_page(soup, browser):
     new_link = new_link.split("%3Fsrc")[0]
     new_link = new_link.split("?extParam")[0]
     results = []
-    results.append(asyncio.create_task(data_product(soup, new_link, browser)))
+    results.append(asyncio.create_task(data_product(soup, new_link, context)))
     results.append(
-        asyncio.create_task(data_shop("/".join(new_link.split("/")[:-1]), browser))
+        asyncio.create_task(data_shop("/".join(new_link.split("/")[:-1]), context))
     )
     results = await asyncio.gather(*results)
     combined_data = {}
@@ -149,9 +148,8 @@ async def scrape_page(soup, browser):
     return combined_data
 
 
-async def data_product(soup_produk, product_link, browser):
+async def data_product(soup_produk, product_link, context):
     try:
-        context = await browser.new_context()
         page = await context.new_page()
         print("Membuka halaman...")
         await page.goto(product_link, timeout=1800000)
@@ -242,9 +240,8 @@ async def data_product(soup_produk, product_link, browser):
     return None
 
 
-async def data_shop(shop_link, browser):
+async def data_shop(shop_link, context):
     try:
-        context = await browser.new_context()
         page = await context.new_page()
         print("Membuka halaman...")
         await page.goto(shop_link, timeout=1800000)
