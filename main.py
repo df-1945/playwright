@@ -67,7 +67,7 @@ async def main(keyword, pages):
 
         async def process_task(i):
             async with semaphore:
-                data = asyncio.create_task(scrape_page(product_soup[i], context))
+                data = asyncio.create_task(scrape_page(product_soup[i], browser))
                 await asyncio.gather(data)
 
         for i in range(len(product_soup)):
@@ -126,7 +126,7 @@ async def scroll(page, scroll_amount):
         print(f"Terjadi kesalahan saat Scrolling: {str(e)}")
 
 
-async def scrape_page(soup, context):
+async def scrape_page(soup, browser):
     href = soup.find("a")["href"]
     link_parts = href.split("r=")
     r_part = link_parts[-1]
@@ -137,9 +137,9 @@ async def scrape_page(soup, context):
     new_link = new_link.split("%3Fsrc")[0]
     new_link = new_link.split("?extParam")[0]
     results = []
-    results.append(asyncio.create_task(data_product(soup, new_link, context)))
+    results.append(asyncio.create_task(data_product(soup, new_link, browser)))
     results.append(
-        asyncio.create_task(data_shop("/".join(new_link.split("/")[:-1]), context))
+        asyncio.create_task(data_shop("/".join(new_link.split("/")[:-1]), browser))
     )
     results = await asyncio.gather(*results)
     combined_data = {}
@@ -149,8 +149,9 @@ async def scrape_page(soup, context):
     return combined_data
 
 
-async def data_product(soup_produk, product_link, context):
+async def data_product(soup_produk, product_link, browser):
     try:
+        context = await browser.new_context()
         page = await context.new_page()
         print("Membuka halaman...")
         await page.goto(product_link, timeout=1800000)
@@ -241,8 +242,9 @@ async def data_product(soup_produk, product_link, context):
     return None
 
 
-async def data_shop(shop_link, context):
+async def data_shop(shop_link, browser):
     try:
+        context = await browser.new_context()
         page = await context.new_page()
         print("Membuka halaman...")
         await page.goto(shop_link, timeout=1800000)
