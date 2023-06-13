@@ -6,11 +6,12 @@ import asyncio
 import time
 from playwright.async_api import async_playwright
 from pathlib import Path
+from enum import Enum
+import psutil
 
 app = FastAPI()
 
 origins = [
-    "http://localhost:3000",
     "https://kikisan.pages.dev",
     "https://kikisan.site",
     "https://www.kikisan.site",
@@ -25,22 +26,80 @@ app.add_middleware(
 )
 
 
+class Metode(str, Enum):
+    def __str__(self):
+        return str(self.value)
+
+    HTTPX = "PLAYWRIGHT"
+
+
 class DataRequest(BaseModel):
-    pages: int
     keyword: str
-    userAgent: str
+    pages: int
+    metode: Metode
 
 
-@app.post("/playwright")
-def index(data: DataRequest):
+data_playwright = []
+
+
+@app.post("/playwright/{userAgent}")
+def input_playwright(userAgent: str, input: DataRequest):
     try:
+        process = psutil.Process()
+
+        # Dapatkan penggunaan CPU sebelum eksekusi
+        cpu_percent_before = process.cpu_percent(interval=None)
+
+        # Dapatkan penggunaan RAM sebelum eksekusi
+        memory_info_before = process.memory_info().rss
+
+        sent_bytes_start, received_bytes_start = get_network_usage()
+
         start_time = time.time()
-        loop = asyncio.run(main(data.keyword, data.pages))
+        hasil = asyncio.run(main(input.keyword, input.pages))
         end_time = time.time()
-        print(
-            f"Berhasil mengambil {len(loop)} produk dalam {end_time - start_time} detik."
+
+        sent_bytes_end, received_bytes_end = get_network_usage()
+
+        sent_bytes_total = sent_bytes_end - sent_bytes_start
+        received_bytes_total = received_bytes_end - received_bytes_start
+
+        # Dapatkan penggunaan CPU saat eksekusi
+        cpu_percent_during = process.cpu_percent(interval=None)
+
+        # Dapatkan penggunaan RAM saat eksekusi
+        memory_info_during = process.memory_info().rss
+
+        cpu_percent_total = (
+            max(cpu_percent_during, cpu_percent_before) - cpu_percent_before
         )
-        return loop
+        memory_info_total = (
+            max(memory_info_during, memory_info_before) - memory_info_before
+        )
+
+        print("Total Penggunaan Internet:")
+        print("Upload:", format_bytes(sent_bytes_total))
+        print("Download:", format_bytes(received_bytes_total))
+
+        print("Penggunaan CPU sebelum eksekusi: {} %".format(cpu_percent_total))
+        print("Penggunaan RAM sebelum eksekusi:", format_bytes(memory_info_total))
+
+        print(
+            f"Berhasil mengambil {len(hasil)} produk dalam {end_time - start_time} detik."
+        )
+        data = {
+            "upload": format_bytes(sent_bytes_total),
+            "download": format_bytes(received_bytes_total),
+            "cpu": f"{format(cpu_percent_total)}%",
+            "ram": format_bytes(memory_info_total),
+            "keyword": input.keyword,
+            "pages": input.pages,
+            "time": f"{end_time - start_time} detik",
+            "jumlah": len(hasil),
+            "hasil": hasil,
+        }
+        data_playwright.append(data)
+        return data_playwright
     except Exception as e:
         return e
 
@@ -48,7 +107,7 @@ def index(data: DataRequest):
 async def main(keyword, pages):
     product_soup = []
     async with async_playwright() as playwright:
-        # browser = await playwright.chromium.launch(headless=True)
+        # browser = await playwright.chromium.launch(headless=False)
         # context = await browser.new_context()
         path_to_extension = Path(__file__).parent.joinpath("my-extension")
         context = await playwright.chromium.launch_persistent_context(
@@ -73,13 +132,13 @@ async def main(keyword, pages):
             page_product_soup = await task
             product_soup.extend(page_product_soup)
 
-        semaphore = asyncio.Semaphore(2)
+        semaphore = asyncio.Semaphore(5)
         tasks = []
 
         async def process_task(i):
             async with semaphore:
-                data = asyncio.create_task(scrape_page(product_soup[i], context))
-                await asyncio.gather(data)
+                data = await scrape_page(product_soup[i], context)
+                return data
 
         for i in range(len(product_soup)):
             task = asyncio.create_task(process_task(i))
@@ -87,17 +146,20 @@ async def main(keyword, pages):
 
         tasks = await asyncio.gather(*tasks)
         # await browser.close()
-
-    return tasks
+    combined_data = []
+    for array in tasks:
+        if array:
+            combined_data.append(array)
+    return combined_data
 
 
 async def scrape(url, context):
     soup_produk = []
     try:
         page = await context.new_page()
-        print("Membuka halaman...")
+        print(f"Membuka halaman {url}...")
         await page.goto(url, timeout=1800000)
-        print("Menunggu reload...")
+        print(f"Menunggu reload {url}...")
         await page.wait_for_load_state("networkidle", timeout=1800000)
         # await page.wait_for_selector(".css-jza1fo")
         await scroll(page, 1000)
@@ -162,9 +224,9 @@ async def scrape_page(soup, context):
 async def data_product(soup_produk, product_link, context):
     try:
         page = await context.new_page()
-        print("Membuka halaman...")
+        print(f"Membuka halaman {product_link}...")
         await page.goto(product_link, timeout=1800000)
-        print("Menunggu reload...")
+        print(f"Menunggu reload {product_link}...")
         await page.wait_for_load_state("networkidle", timeout=1800000)
         # await page.wait_for_selector(".css-1wa8o67", timeout=1800000)
         # await scroll(page,1000)
@@ -174,8 +236,14 @@ async def data_product(soup_produk, product_link, context):
             "link_product": "",
             "product_name": ("h1", {"class": "css-1os9jjn"}),
             "product_price": ("div", {"class": "price"}),
-            "product_terjual": ("span", {"class": "prd_label-integrity css-1duhs3e"}),
-            "product_rating": ("span", {"class": "prd_rating-average-text css-t70v7i"}),
+            "product_terjual": (
+                "span",
+                {"class": "prd_label-integrity css-1duhs3e"},
+            ),
+            "product_rating": (
+                "span",
+                {"class": "prd_rating-average-text css-t70v7i"},
+            ),
             "product_diskon": (
                 "div",
                 {"class": "prd_badge-product-discount css-1qtulwh"},
@@ -254,9 +322,9 @@ async def data_product(soup_produk, product_link, context):
 async def data_shop(shop_link, context):
     try:
         page = await context.new_page()
-        print("Membuka halaman...")
+        print(f"Membuka halaman {shop_link}...")
         await page.goto(shop_link, timeout=1800000)
-        print("Menunggu reload...")
+        print(f"Menunggu reload {shop_link}...")
         await page.wait_for_load_state("networkidle", timeout=1800000)
         # await page.wait_for_selector(".css-11kmdxw", timeout=1800000)
 
@@ -319,3 +387,21 @@ async def data_shop(shop_link, context):
         print(f"Terjadi kesalahan saat mengakses halaman {shop_link}: {str(e)}")
     await page.close()
     return None
+
+
+def get_network_usage():
+    network_stats = psutil.net_io_counters()
+    sent_bytes = network_stats.bytes_sent
+    received_bytes = network_stats.bytes_recv
+
+    return sent_bytes, received_bytes
+
+
+def format_bytes(bytes):
+    # Fungsi ini mengubah ukuran byte menjadi format yang lebih mudah dibaca
+    sizes = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while bytes >= 1024 and i < len(sizes) - 1:
+        bytes /= 1024
+        i += 1
+    return "{:.2f} {}".format(bytes, sizes[i])
